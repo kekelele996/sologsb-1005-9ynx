@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "ng serve --host 0.0.0.0 --port 4200",
-    "build": "ng build --configuration production"
+    "build": "ng build --configuration production",
+    "test": "mkdir -p .test-build && esbuild src/app/reconcile.test.ts --bundle --platform=node --format=cjs --outfile=.test-build/reconcile.test.cjs --log-level=warning && esbuild src/app/workbench.service.test.ts --bundle --platform=node --format=cjs --outfile=.test-build/workbench.service.test.cjs --alias:@angular/core=./test-stub.ts --log-level=warning && node --test .test-build/reconcile.test.cjs .test-build/workbench.service.test.cjs; status=$?; rm -rf .test-build; exit $status"
   },
   "dependencies": {
     "@angular/common": "19.2.25",

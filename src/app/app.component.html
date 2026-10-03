@@ -3,7 +3,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">权</span>
-      <div><strong>权利要求映射工作台</strong><small>Claim-to-Spec Traceability</small></div>
+      <div><strong>权利要求映射工作台</strong><small>Shared Feature Catalog Traceability</small></div>
     </div>
     <div class="top-actions">
       <span class="save-state">浏览器本地自动保存</span>
@@ -18,12 +18,24 @@
       <section class="panel role-panel">
         <label for="role">当前角色</label>
         <p-select inputId="role" [options]="roleOptions" optionLabel="label" optionValue="value" [ngModel]="state.role" (ngModelChange)="service.setRole($event)" />
-        <p class="hint">{{ currentRoleLabel }}。批注权限按作者锁定。</p>
+        <p class="hint">{{ currentRoleLabel }}。批注权限按作者锁定，特征表仅代理人可发布。</p>
+      </section>
+
+      <section class="panel case-panel">
+        <div class="panel-heading"><span>案件工作区</span><p-badge [value]="state.cases.length" severity="secondary" /></div>
+        <button *ngFor="let caseRecord of state.cases" type="button" class="case-nav" [class.active]="caseRecord.id === state.activeCaseId" (click)="service.selectCase(caseRecord.id)">
+          <span class="case-main">
+            <strong>{{ caseRecord.name }}</strong>
+            <small>{{ caseRecord.applicationNo }} · 代理人 {{ caseRecord.agentName }}</small>
+          </span>
+          <span [class]="'case-sync ' + caseSyncTone(caseRecord.lastReconcileStatus)">{{ caseSyncLabel(caseRecord.lastReconcileStatus) }}</span>
+        </button>
+        <p-button label="新建案件工作区" icon="pi pi-plus" severity="secondary" [outlined]="true" [fluid]="true" [disabled]="!canEditMainData" (onClick)="service.addCase()" />
       </section>
 
       <section class="panel">
-        <div class="panel-heading"><span>权利要求</span><p-badge [value]="state.claims.length" severity="secondary" /></div>
-        <button *ngFor="let claim of state.claims" type="button" class="claim-nav" [class.active]="claim.id === state.selectedClaimId" (click)="service.selectClaim(claim.id)">
+        <div class="panel-heading"><span>本案件权利要求</span><p-badge [value]="activeCase.claims.length" severity="secondary" /></div>
+        <button *ngFor="let claim of activeCase.claims" type="button" class="claim-nav" [class.active]="claim.id === activeCase.selectedClaimId" (click)="service.selectClaim(claim.id)">
           <span class="claim-number">{{ claim.number }}</span>
           <span><strong>{{ claim.title }}</strong><small>{{ claim.independent ? '独立权利要求' : '从属权利要求' }}</small></span>
         </button>
@@ -40,7 +52,7 @@
       </section>
 
       <section class="panel export-panel">
-        <span class="eyebrow">核对结果</span>
+        <span class="eyebrow">核对结果（{{ activeCase.applicationNo }}）</span>
         <p-button label="导出 JSON" icon="pi pi-download" [outlined]="true" (onClick)="exportFile('json')" />
         <p-button label="导出 CSV" icon="pi pi-table" [outlined]="true" (onClick)="exportFile('csv')" />
       </section>
@@ -48,26 +60,43 @@
 
     <section class="main-panel" *ngIf="selectedClaim as claim">
       <div class="page-heading">
-        <div><span class="eyebrow">案件 CN-2026-0917</span><h1>{{ claim.title }}</h1><p>独立项与从属项在同一视图中完成拆解、引用和支持映射。</p></div>
-        <div class="status-stack"><span class="status-chip ready">本地草稿</span><span class="updated">所有编辑实时持久化</span></div>
+        <div>
+          <span class="eyebrow">{{ activeCase.applicationNo }} · 代理人 {{ activeCase.agentName }}</span>
+          <h1>{{ claim.title }}</h1>
+          <p>权利要求正文、特征层级与说明书依据在本案件工作区维护，技术特征定义引用所内统一特征表。</p>
+        </div>
+        <div class="status-stack">
+          <div class="case-fields">
+            <input pInputText [value]="activeCase.name" aria-label="案件名称" (change)="updateCaseField('name', $event)" [disabled]="!canEditMainData">
+            <input pInputText [value]="activeCase.applicationNo" aria-label="申请号" (change)="updateCaseField('applicationNo', $event)" [disabled]="!canEditMainData">
+          </div>
+          <span class="status-chip ready">本地草稿 · 实时持久化</span>
+        </div>
       </div>
 
       <nav class="tabs" aria-label="工作台视图">
         <button [class.active]="state.activeTab === 'mapping'" (click)="service.setTab('mapping')"><i class="pi pi-sitemap"></i>特征映射</button>
         <button [class.active]="state.activeTab === 'claim'" (click)="service.setTab('claim')"><i class="pi pi-file-edit"></i>权利要求录入</button>
+        <button [class.active]="state.activeTab === 'catalog'" (click)="service.setTab('catalog')"><i class="pi pi-database"></i>所内特征表</button>
         <button [class.active]="state.activeTab === 'compare'" (click)="service.setTab('compare')"><i class="pi pi-arrows-h"></i>版本比较</button>
         <button [class.active]="state.activeTab === 'audit'" (click)="service.setTab('audit')"><i class="pi pi-check-square"></i>核对清单</button>
       </nav>
 
       <div class="view" *ngIf="state.activeTab === 'mapping'">
+        <div *ngIf="pendingCount" class="pending-banner">
+          <i class="pi pi-exclamation-triangle"></i>
+          <span>本案件有 {{ pendingCount }} 个特征在特征表更新后未能唯一对应，说明书依据已保留，请逐个人工确认。</span>
+          <p-button label="去确认" size="small" severity="warn" (onClick)="service.setTab('catalog')" />
+        </div>
+
         <div class="mapping-grid">
           <section class="panel feature-list-panel">
             <div class="panel-heading"><span>技术特征树</span><p-button label="新增特征" icon="pi pi-plus" size="small" [disabled]="!canEditMainData" (onClick)="service.addFeature()" /></div>
             <div class="feature-tree">
-              <button *ngFor="let feature of claimFeatures; let i = index" type="button" class="feature-item" [class.selected]="feature.id === state.selectedFeatureId" [style.--depth]="feature.parentId ? 1 : 0" (click)="service.selectFeature(feature.id)">
+              <button *ngFor="let feature of claimFeatures" type="button" class="feature-item" [class.selected]="feature.id === activeCase.selectedFeatureId" [class.pending]="feature.linkStatus === 'pending'" [style.--depth]="feature.parentId ? 1 : 0" (click)="service.selectFeature(feature.id)">
                 <span class="feature-index">{{ feature.label.split('·')[0].trim() }}</span>
                 <span><strong>{{ feature.label }}</strong><small>{{ feature.text || '尚未填写特征内容' }}</small></span>
-                <i class="pi pi-chevron-right"></i>
+                <span [class]="'link-badge ' + linkBadge(feature).tone">{{ linkBadge(feature).text }}</span>
               </button>
               <div *ngIf="!claimFeatures.length" class="empty-state">尚未拆分技术特征</div>
             </div>
@@ -78,6 +107,37 @@
               <div><span class="eyebrow">当前技术特征</span><h2>{{ feature.label }}</h2></div>
               <span class="owner-chip">负责角色：{{ ownerLabel(feature.ownerRole) }}</span>
             </div>
+
+            <div [class]="'catalog-link-card ' + feature.linkStatus">
+              <div class="catalog-link-head">
+                <span [class]="'link-badge large ' + linkBadge(feature).tone">
+                  {{ feature.linkStatus === 'linked' ? '引用特征表' : feature.linkStatus === 'pending' ? '待代理人确认' : '本案件自定义' }}
+                </span>
+                <span *ngIf="feature.linkStatus === 'linked' && catalogEntry(feature.catalogFeatureId) as entry" class="catalog-ref">
+                  <strong>{{ entry.code }} · {{ entry.label }}</strong><small>v{{ entry.version }} · {{ entry.category }}</small>
+                </span>
+              </div>
+              <p *ngIf="feature.linkStatus === 'linked' && catalogEntry(feature.catalogFeatureId) as entry" class="catalog-definition">特征表定义：{{ entry.definition }}</p>
+
+              <div *ngIf="feature.pending" class="pending-box">
+                <p><i class="pi pi-exclamation-triangle"></i>{{ feature.pending.reason }}</p>
+                <p class="pending-meta" *ngIf="pendingCandidates(feature).length">
+                  候选条目：<span *ngFor="let candidate of pendingCandidates(feature); let last = last">{{ candidate.code }} · {{ candidate.label }}<ng-container *ngIf="!last">；</ng-container></span>
+                </p>
+                <p class="pending-meta" *ngIf="!pendingCandidates(feature).length">无候选条目：可指定特征表中的其他条目，或转为本案件自定义特征。</p>
+                <p class="pending-kept">说明书依据（{{ feature.supportIds.length }} 段）与正文均已保留，确认前不会落到不存在的特征上。</p>
+                <p-button label="人工确认对应关系" icon="pi pi-check-circle" size="small" [disabled]="!canAdminCatalog" (onClick)="openPending(feature)" />
+              </div>
+
+              <div class="manual-link" *ngIf="canAdminCatalog">
+                <select [value]="feature.linkStatus === 'local' ? '' : feature.catalogFeatureId || ''" (change)="$any($event.target).value ? service.linkFeatureToCatalog(feature.id, $any($event.target).value) : service.unlinkFeature(feature.id)">
+                  <option value="">— 本案件自定义特征（不引用特征表）—</option>
+                  <option *ngFor="let entry of activeCatalog" [value]="entry.id">{{ entry.code }} · {{ entry.label }}（v{{ entry.version }}）</option>
+                </select>
+                <small>手动指定后即视为代理人确认，挂起状态解除。</small>
+              </div>
+            </div>
+
             <label>特征名称<input pInputText [value]="feature.label" (change)="updateFeatureField('label', $event)" [disabled]="!canEditMainData"></label>
             <label>特征正文<textarea pTextarea rows="3" [value]="feature.text" (change)="updateFeatureField('text', $event)" [disabled]="!canEditMainData"></textarea></label>
             <div class="form-row">
@@ -106,8 +166,8 @@
 
           <section class="panel support-panel">
             <div class="panel-heading"><span>说明书支持依据</span><span class="heading-actions"><p-badge [value]="selectedFeature?.supportIds?.length || 0" severity="success" /><p-button label="新增段落" icon="pi pi-plus" size="small" [disabled]="!canEditMainData" (onClick)="service.addParagraph()" /></span></div>
-            <p class="hint">选择段落即建立映射；取消选择会移除映射。只有至少一个段落时可消除“缺少依据”。</p>
-            <article *ngFor="let paragraph of state.paragraphs" class="paragraph-card" [class.mapped]="selectedFeature && isMapped(selectedFeature, paragraph.id)">
+            <p class="hint">选择段落即建立映射；取消选择会移除映射。特征表对应关系挂起时依据保留在本特征上，不会落到已消失的条目。</p>
+            <article *ngFor="let paragraph of activeCase.paragraphs" class="paragraph-card" [class.mapped]="selectedFeature && isMapped(selectedFeature, paragraph.id)">
               <label>
                 <input type="checkbox" [checked]="selectedFeature && isMapped(selectedFeature, paragraph.id)" [disabled]="!selectedFeature || !canEditMainData" (change)="selectedFeature && service.toggleParagraphMapping(selectedFeature.id, paragraph.id)">
                 <span class="paragraph-label">{{ paragraph.section }}</span>
@@ -125,8 +185,8 @@
         <div class="mapping-summary">
           <div><span>特征覆盖</span><strong>{{ claimFeatures.length }}</strong></div>
           <div><span>已建立依据</span><strong>{{ mappedFeatureCount }}</strong></div>
-          <div><span>待清理映射</span><strong>{{ state.orphanMappings.length }}</strong></div>
-          <div><span>批注总数</span><strong>{{ state.annotations.length }}</strong></div>
+          <div><span>待确认对应</span><strong>{{ pendingCount }}</strong></div>
+          <div><span>批注总数</span><strong>{{ activeCase.annotations.length }}</strong></div>
         </div>
 
         <section class="panel annotation-panel" *ngIf="selectedFeature as feature">
@@ -155,19 +215,131 @@
             <label class="check-row standalone"><input type="checkbox" [checked]="claim.independent" (change)="updateClaimField('independent', $event)" [disabled]="!canEditMainData">独立权利要求</label>
           </div>
           <label>正文<textarea pTextarea rows="12" [value]="claim.text" (change)="updateClaimField('text', $event)" [disabled]="!canEditMainData"></textarea></label>
-          <div class="edit-note"><i class="pi pi-info-circle"></i>特征拆分不会丢失原文。修改权利要求后，请重新检查特征覆盖和引用关系。</div>
+          <div class="edit-note"><i class="pi pi-info-circle"></i>特征表改定义/拆分后，引用旧条目的特征会自动重对；唯一命中的直接切换，不能唯一对应的会挂起等确认。</div>
         </section>
+      </div>
+
+      <div class="view" *ngIf="state.activeTab === 'catalog'">
+        <div class="catalog-layout">
+          <section class="panel catalog-panel">
+            <div class="panel-heading">
+              <span>所内技术特征表 <small class="catalog-sub">统一维护，发布后各案件引用按新定义重对</small></span>
+              <span class="heading-actions"><p-button label="新增条目" icon="pi pi-plus" size="small" severity="secondary" [outlined]="true" [disabled]="!canAdminCatalog" (onClick)="service.addCatalogFeature()" /></span>
+            </div>
+            <div class="catalog-table">
+              <div class="catalog-row catalog-head"><span>编号</span><span>名称 / 定义</span><span>分类</span><span>版本</span><span>操作</span></div>
+              <div class="catalog-row" *ngFor="let entry of state.catalog" [class.obsolete]="entry.status === 'obsolete'">
+                <span class="cat-code">{{ entry.code }}</span>
+                <span class="cat-body">
+                  <div class="cat-edit" *ngIf="canAdminCatalog && entry.status === 'active'; else catView">
+                    <input pInputText [value]="entry.label" (change)="service.updateCatalogFeature(entry.id, { label: $any($event.target).value })">
+                    <textarea pTextarea rows="2" [value]="entry.definition" (change)="service.updateCatalogFeature(entry.id, { definition: $any($event.target).value })"></textarea>
+                  </div>
+                  <ng-template #catView><strong>{{ entry.label }}</strong><p>{{ entry.definition }}</p></ng-template>
+                  <em *ngIf="entry.status === 'obsolete'" class="obsolete-tag">已停用（拆分/移除）</em>
+                </span>
+                <span class="cat-category">
+                  <ng-container *ngIf="canAdminCatalog && entry.status === 'active'"><input pInputText [value]="entry.category" (change)="service.updateCatalogFeature(entry.id, { category: $any($event.target).value })"></ng-container>
+                  <ng-container *ngIf="!canAdminCatalog || entry.status === 'obsolete'">{{ entry.category }}</ng-container>
+                </span>
+                <span class="cat-version">v{{ entry.version }}</span>
+                <span class="cat-actions" *ngIf="entry.status === 'active'">
+                  <button type="button" class="link-btn" [disabled]="!canAdminCatalog || hasDraft(entry.id)" (click)="addDraft('redefine', entry.id)">改定义</button>
+                  <button type="button" class="link-btn" [disabled]="!canAdminCatalog || hasDraft(entry.id)" (click)="addDraft('split', entry.id)">拆分</button>
+                  <button type="button" class="link-btn danger" [disabled]="!canAdminCatalog || hasDraft(entry.id)" (click)="addDraft('remove', entry.id)">停用</button>
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel drafts-panel">
+            <div class="panel-heading">
+              <span>暂存变更（{{ drafts.length }}）</span>
+              <p-button label="发布并重对全部案件" icon="pi pi-send" size="small" [disabled]="!canAdminCatalog || !drafts.length" (onClick)="openPublish()" />
+            </div>
+            <p class="hint">暂存只在本视图内编辑，点击发布后才生效并触发各案件对应。</p>
+            <article class="draft-card" *ngFor="let draft of drafts">
+              <header>
+                <strong>{{ draftKindLabel(draft.kind) }}：{{ draftFeature(draft)?.label }}</strong>
+                <p-button icon="pi pi-times" severity="secondary" [text]="true" size="small" (onClick)="removeDraft(draft.id)" />
+              </header>
+
+              <div class="draft-form" *ngIf="draft.kind === 'redefine'">
+                <label>新名称<input pInputText [value]="draft.newLabel" (change)="updateDraftNote(draft, 'newLabel', $event)"></label>
+                <label>新定义<textarea pTextarea rows="3" [value]="draft.newDefinition" (change)="updateDraftNote(draft, 'newDefinition', $event)"></textarea></label>
+                <label>分类<input pInputText [value]="draft.newCategory" (change)="updateDraftNote(draft, 'newCategory', $event)"></label>
+                <small>编号不变、版本 +1；引用它的案件特征按新定义重对，差异过大的挂起。</small>
+              </div>
+
+              <div class="draft-form" *ngIf="draft.kind === 'split'">
+                <p class="hint">拆出的新条目（旧条目将停用，引用旧条目的案件特征在下列条目中唯一对应，否则挂起）：</p>
+                <div class="split-part" *ngFor="let part of draft.splitParts; let i = index">
+                  <input pInputText [placeholder]="'新条目 ' + (i + 1) + ' 名称'" [value]="part.label" (change)="updateDraftPart(draft, i, 'label', $event)">
+                  <textarea pTextarea rows="2" [placeholder]="'新条目 ' + (i + 1) + ' 定义'" [value]="part.definition" (change)="updateDraftPart(draft, i, 'definition', $event)"></textarea>
+                  <input pInputText [placeholder]="'分类'" [value]="part.category" (change)="updateDraftPart(draft, i, 'category', $event)">
+                </div>
+              </div>
+
+              <p *ngIf="draft.kind === 'remove'" class="hint">发布后该条目停用；引用它的案件特征无后继候选，将挂起由代理人改指或转为本案件自定义。</p>
+            </article>
+            <div *ngIf="!drafts.length" class="empty-state">暂无暂存变更。可在特征表上对某个条目选择“改定义 / 拆分 / 停用”。</div>
+
+            <div class="fault-drill">
+              <label for="fault">故障演练：下次发布时令</label>
+              <p-select inputId="fault" [options]="state.cases" optionLabel="name" optionValue="id" [ngModel]="state.failNextCaseId"
+                placeholder="（不注入故障）" [showClear]="true" (ngModelChange)="armFaultForCase($event)" />
+              <small>发布同步命中该案件时模拟处理中断：该案件整案回滚、其他案件与特征表保留，随后可按案件重试。</small>
+            </div>
+          </section>
+
+          <section class="panel sync-panel">
+            <div class="panel-heading"><span>发布与按案件重试</span></div>
+            <article class="report-card" *ngFor="let entry of syncReport">
+              <header>
+                <span [class]="'report-status ' + entry.status">{{ entry.status === 'success' ? '已处理' : '失败已回滚' }}</span>
+                <strong>{{ entry.caseName }}</strong>
+                <time>{{ entry.ranAt | date:'MM-dd HH:mm:ss' }}</time>
+              </header>
+              <ul *ngIf="entry.status === 'success'">
+                <li class="auto" *ngFor="let row of entry.autoLinked"><i class="pi pi-check"></i>“{{ row.featureLabel }}” → {{ row.toLabel }}（相似度 {{ scorePercent(row.score) }}，{{ row.via === 'replacement' ? '后继条目自动对应' : '按新定义核对' }}）</li>
+                <li class="susp" *ngFor="let row of entry.suspended"><i class="pi pi-pause"></i>“{{ row.featureLabel }}”挂起：{{ row.reason }}</li>
+                <li *ngIf="!entry.autoLinked.length && !entry.suspended.length" class="muted">本案件无引用受本次发布影响。</li>
+              </ul>
+              <div *ngIf="entry.status === 'failed'" class="report-error">
+                <p><i class="pi pi-times-circle"></i>{{ entry.error }}</p>
+                <p-button label="按案件重试（只补未对上的部分）" icon="pi pi-refresh" size="small" severity="warn" (onClick)="retryCase(entry.caseId)" />
+              </div>
+            </article>
+            <div class="retry-row" *ngIf="casesNeedingRetry.length">
+              <p-button *ngFor="let c of casesNeedingRetry" [label]="'重试：' + c.name" icon="pi pi-refresh" size="small" severity="secondary" [outlined]="true"
+                [disabled]="c.lastReconcileStatus === 'ok' || c.lastReconcileStatus === 'never'" (onClick)="retryCase(c.id)" />
+            </div>
+            <div *ngIf="!syncReport.length" class="empty-state">尚未发布过特征表变更。</div>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="panel-heading"><span>特征表发布历史</span></div>
+            <article class="change-card" *ngFor="let change of state.catalogChanges">
+              <header><strong>{{ change.note }}</strong><time>{{ change.releasedAt | date:'yyyy-MM-dd HH:mm' }}</time></header>
+              <ul>
+                <li *ngFor="let m of change.modified">改定义：{{ catalogLabel(m.featureId) }} v{{ m.fromVersion }} → v{{ m.toVersion }}</li>
+                <li *ngFor="let o of change.obsolete">{{ o.kind === 'split' ? '拆分' : '停用' }}：{{ o.label }}<span *ngIf="o.replacementIds.length"> → {{ replacementLabels(o.replacementIds) }}</span></li>
+              </ul>
+            </article>
+            <div *ngIf="!state.catalogChanges.length" class="empty-state">发布历史为空。</div>
+          </section>
+        </div>
       </div>
 
       <div class="view" *ngIf="state.activeTab === 'compare'">
         <section class="panel compare-panel">
-          <div class="panel-heading"><span>权利要求版本比较</span><p-button label="保存当前版本" icon="pi pi-save" (onClick)="versionDialog = true" /></div>
-          <div class="compare-selects" *ngIf="state.versions.length >= 2; else needVersions">
-            <label>基准版本<p-select [options]="state.versions" optionLabel="name" optionValue="id" [(ngModel)]="compareA" /></label>
-            <label>目标版本<p-select [options]="state.versions" optionLabel="name" optionValue="id" [(ngModel)]="compareB" /></label>
+          <div class="panel-heading"><span>权利要求版本比较（{{ activeCase.applicationNo }}）</span><p-button label="保存当前版本" icon="pi pi-save" (onClick)="versionDialog = true" /></div>
+          <div class="compare-selects" *ngIf="activeCase.versions.length >= 2; else needVersions">
+            <label>基准版本<p-select [options]="activeCase.versions" optionLabel="name" optionValue="id" [(ngModel)]="compareA" /></label>
+            <label>目标版本<p-select [options]="activeCase.versions" optionLabel="name" optionValue="id" [(ngModel)]="compareB" /></label>
           </div>
           <ng-template #needVersions><div class="empty-state large">至少保存两个版本后即可比较。</div></ng-template>
-          <div *ngIf="state.versions.length >= 2" class="diff-list">
+          <div *ngIf="activeCase.versions.length >= 2" class="diff-list">
             <article *ngFor="let row of compareRows()" [class.changed]="row.changed">
               <header><strong>{{ row.label }}</strong><span>{{ row.changed ? '有差异' : '未变化' }}</span></header>
               <div class="diff-cols">
@@ -176,9 +348,9 @@
               </div>
             </article>
           </div>
-          <div class="version-history" *ngIf="state.versions.length">
+          <div class="version-history" *ngIf="activeCase.versions.length">
             <h3>版本历史</h3>
-            <div class="version-row" *ngFor="let version of state.versions">
+            <div class="version-row" *ngFor="let version of activeCase.versions">
               <span><strong>{{ version.name }}</strong><small>{{ version.createdAt | date:'yyyy-MM-dd HH:mm' }} · {{ version.features.length }} 个特征</small></span>
               <p-button label="恢复此版" icon="pi pi-history" [outlined]="true" size="small" (onClick)="restoreVersion(version.id)" />
             </div>
@@ -194,10 +366,10 @@
             <div><strong>{{ issue.title }}</strong><p>{{ issue.detail }}</p></div>
             <p-button label="定位" icon="pi pi-arrow-right" [text]="true" (onClick)="locateIssue(issue)" />
           </div>
-          <div *ngIf="!issues.length" class="empty-success large"><i class="pi pi-check-circle"></i><strong>所有权利要求均具备说明书支持且引用关系有效。</strong></div>
-          <div class="orphan-area" *ngIf="state.orphanMappings.length">
+          <div *ngIf="!issues.length" class="empty-success large"><i class="pi pi-check-circle"></i><strong>所有权利要求均具备说明书支持，特征表引用有效。</strong></div>
+          <div class="orphan-area" *ngIf="activeCase.orphanMappings.length">
             <h3>已删除特征遗留的映射</h3>
-            <div class="orphan-row" *ngFor="let orphan of state.orphanMappings"><span>{{ orphan.reason }} 对应 {{ paragraphLabel(orphan.paragraphId) }}</span><p-button label="清理" size="small" severity="warn" (onClick)="service.clearOrphan(orphan.id)" /></div>
+            <div class="orphan-row" *ngFor="let orphan of activeCase.orphanMappings"><span>{{ orphan.reason }} 对应 {{ paragraphLabel(orphan.paragraphId) }}</span><p-button label="清理" size="small" severity="warn" (onClick)="service.clearOrphan(orphan.id)" /></div>
           </div>
         </section>
       </div>
@@ -211,6 +383,7 @@
           <strong>{{ feature.supportIds.length }}</strong><small>支持段落</small>
         </div>
         <dl>
+          <dt>特征表</dt><dd>{{ feature.linkStatus === 'linked' ? catalogCode(feature.catalogFeatureId) : feature.linkStatus === 'pending' ? '待确认' : '本案件自定义' }}</dd>
           <dt>父级</dt><dd>{{ feature.parentId ? featureLabel(feature.parentId) : '顶层特征' }}</dd>
           <dt>引用</dt><dd>{{ feature.referenceIds.length }} 个特征</dd>
           <dt>批注</dt><dd>{{ featureAnnotations.length }} 条</dd>
@@ -220,6 +393,7 @@
           <span *ngFor="let id of feature.supportIds">{{ paragraphLabel(id) }}</span>
           <em *ngIf="!feature.supportIds.length">尚未选择说明书段落</em>
         </div>
+        <p-button *ngIf="feature.pending" label="确认对应关系" icon="pi pi-check-circle" size="small" severity="warn" [fluid]="true" [disabled]="!canAdminCatalog" (onClick)="openPending(feature)" />
       </section>
       <ng-template #noSelection><section class="panel empty-state">选择技术特征查看映射详情。</section></ng-template>
       <section class="panel key-help">
@@ -229,8 +403,8 @@
         <div><kbd>Ctrl</kbd><span>+</span><kbd>S</kbd><p>保存版本</p></div>
       </section>
       <section class="panel rule-card">
-        <i class="pi pi-shield"></i>
-        <div><strong>批注权限隔离</strong><p>当前用户不能修改其他角色创建的批注，输入框保持只读。</p></div>
+        <i class="pi pi-database"></i>
+        <div><strong>特征表对应规则</strong><p>唯一命中自动切换；无法唯一对应则挂起，说明书依据保留在本案件特征上，代理人确认后才重新引用。</p></div>
       </section>
     </aside>
   </main>
@@ -238,12 +412,49 @@
 
 <p-dialog header="保存版本快照" [(visible)]="versionDialog" [modal]="true" [style]="{ width: '460px' }">
   <div class="dialog-body">
-    <p>保存当前全部权利要求和技术特征，用于后续比较或恢复。</p>
+    <p>保存当前案件“{{ activeCase.applicationNo }}”的全部权利要求和技术特征，用于后续比较或恢复。</p>
     <label>版本名称<input pInputText [(ngModel)]="versionName" placeholder="例如：答复审查意见前" (keyup.enter)="createVersion()"></label>
   </div>
   <ng-template pTemplate="footer">
     <p-button label="取消" severity="secondary" [outlined]="true" (onClick)="versionDialog = false" />
     <p-button label="保存快照" icon="pi pi-save" (onClick)="createVersion()" />
+  </ng-template>
+</p-dialog>
+
+<p-dialog header="发布特征表变更" [(visible)]="publishDialog" [modal]="true" [style]="{ width: '480px' }">
+  <div class="dialog-body">
+    <p>发布 {{ drafts.length }} 项暂存变更后，全部 {{ state.cases.length }} 个案件将自动重对引用：唯一命中自动切换，不能唯一对应的挂起等代理人确认。</p>
+    <label>发布说明<textarea pTextarea rows="2" [(ngModel)]="publishNote" placeholder="例如：传感模块定义细化，拆分为温度/湿度两条"></textarea></label>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="取消" severity="secondary" [outlined]="true" (onClick)="publishDialog = false" />
+    <p-button label="确认发布并重对" icon="pi pi-send" (onClick)="publishCatalog()" />
+  </ng-template>
+</p-dialog>
+
+<p-dialog header="确认特征表对应关系" [visible]="!!pendingResolveTarget" (visibleChange)="!$event && closePending()" [modal]="true" [style]="{ width: '520px' }">
+  <div class="dialog-body" *ngIf="pendingResolveTarget as feature">
+    <p><strong>案件特征：</strong>{{ feature.label }} · {{ feature.text }}</p>
+    <p class="hint" *ngIf="feature.pending">{{ feature.pending.reason }}</p>
+    <label class="check-row standalone">
+      <input type="radio" name="pending-choice" [checked]="!pendingCustom" (change)="pendingCustom = false">
+      重新对应到特征表条目
+    </label>
+    <select class="pending-select" [disabled]="pendingCustom" [value]="pendingChoice" (change)="pendingChoice = $any($event.target).value">
+      <option value="" disabled>请选择…</option>
+      <option *ngFor="let candidate of pendingCandidates(feature)" [value]="candidate.id">候选：{{ candidate.code }} · {{ candidate.label }}（v{{ candidate.version }}）</option>
+      <option disabled>── 其他在库条目 ──</option>
+      <option *ngFor="let entry of activeCatalog" [value]="entry.id">{{ entry.code }} · {{ entry.label }}（v{{ entry.version }}）</option>
+    </select>
+    <label class="check-row standalone">
+      <input type="radio" name="pending-choice" [checked]="pendingCustom" (change)="pendingCustom = true">
+      转为本案件自定义特征（不再引用特征表）
+    </label>
+    <p class="hint">说明书依据（{{ feature.supportIds.length }} 段）与特征正文在确认前后都保留在本案件特征上。</p>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="取消" severity="secondary" [outlined]="true" (onClick)="closePending()" />
+    <p-button label="确认" icon="pi pi-check" [disabled]="!pendingCustom && !pendingChoice" (onClick)="confirmPending()" />
   </ng-template>
 </p-dialog>
 
