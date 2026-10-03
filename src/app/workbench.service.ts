@@ -1,45 +1,25 @@
-import { Injectable, OnDestroy } from '@angular/core'
-import { BehaviorSubject, map, type Observable } from 'rxjs'
-import type { Annotation, Claim, ClaimVersion, Feature, Paragraph, Position, Role, ValidationIssue, WorkbenchState } from './models'
+import { Injectable } from '@angular/core'
+import { BehaviorSubject, map } from 'rxjs'
+import type {
+  Annotation, CaseFile, Claim, ClaimVersion, Feature, MasterFeature,
+  Paragraph, PendingLink, Position, Role, ValidationIssue, WorkbenchState
+} from './models'
+import { caseAlpha, legacyV1State, seedState, tableRevision1 } from './seed'
+import { applyPlan, buildPlan, caseNeedsSync, caseStaleFeatures, migrateLegacyState, resolvePendingLink, scoreCandidates } from './sync-engine'
 
-const STORAGE_KEY = 'patent-claim-mapping-workbench-v1'
-const POSITION_KEY = 'patent-claim-mapping-position-v1'
+const STORAGE_KEY = 'patent-claim-mapping-workbench-v2'
+const LEGACY_STORAGE_KEY = 'patent-claim-mapping-workbench-v1'
+const POSITION_KEY = 'patent-claim-mapping-position-v2'
 
-const initialClaims: Claim[] = [
-  { id: 'claim-1', number: 1, title: '一种自适应展柜环境控制装置', independent: true, text: '一种自适应展柜环境控制装置，包括：柜体；环境传感模块，设置于所述柜体内并用于采集温湿度数据；以及控制模块，与所述环境传感模块通信，并根据所述温湿度数据调节所述柜体的微环境。' },
-  { id: 'claim-2', number: 2, title: '传感模块的布置方式', independent: false, text: '根据权利要求1所述的装置，其特征在于，所述环境传感模块包括沿所述柜体对角线布置的多个温湿度传感器。' },
-  { id: 'claim-3', number: 3, title: '控制模块的调节策略', independent: false, text: '根据权利要求1所述的装置，其特征在于，所述控制模块基于历史数据与当前数据之间的偏差分级调节除湿单元。' }
-]
-const initialParagraphs: Paragraph[] = [
-  { id: 'para-0012', section: '说明书 [0012]', text: '柜体1形成用于陈列文物的封闭空间。环境传感模块2安装于柜体内部，可采集温度、相对湿度等环境数据，并将数据发送至控制模块3。' },
-  { id: 'para-0018', section: '说明书 [0018]', text: '在一种实施方式中，多个温湿度传感器沿柜体对角线布置，由此可降低局部气流造成的测量偏差。传感器数量可根据柜体容积设定。' },
-  { id: 'para-0024', section: '说明书 [0024]', text: '控制模块可比较当前湿度与预设区间，并结合历史变化趋势生成调节等级。当偏差持续超过阈值时，控制模块启动除湿单元并提高调节频率。' },
-  { id: 'para-0031', section: '说明书 [0031]', text: '控制模块与传感模块之间可以采用有线或无线通信。通信链路可周期传输数据，传输周期例如为十秒至五分钟。' },
-  { id: 'para-0040', section: '说明书 [0040]', text: '微环境调节包括湿度调节、温度调节及气体交换。控制策略可记录执行结果，用于后续趋势判断。' }
-]
-const initialFeatures: Feature[] = [
-  { id: 'feature-a', claimId: 'claim-1', label: 'A · 柜体', text: '柜体', parentId: null, referenceIds: [], supportIds: ['para-0012'], ownerRole: 'author' },
-  { id: 'feature-b', claimId: 'claim-1', label: 'B · 环境传感模块', text: '设置于柜体内，用于采集温湿度数据', parentId: 'feature-a', referenceIds: [], supportIds: ['para-0012', 'para-0018'], ownerRole: 'author' },
-  { id: 'feature-c', claimId: 'claim-1', label: 'C · 控制模块通信', text: '与环境传感模块通信', parentId: 'feature-a', referenceIds: ['feature-b'], supportIds: ['para-0012', 'para-0031'], ownerRole: 'author' },
-  { id: 'feature-d', claimId: 'claim-1', label: 'D · 调节微环境', text: '根据温湿度数据调节柜体微环境', parentId: null, referenceIds: ['feature-b', 'feature-c'], supportIds: ['para-0024', 'para-0040'], ownerRole: 'author' },
-  { id: 'feature-e', claimId: 'claim-2', label: 'E · 对角线布置', text: '多个温湿度传感器沿柜体对角线布置', parentId: null, referenceIds: [], supportIds: ['para-0018'], ownerRole: 'author' },
-  { id: 'feature-f', claimId: 'claim-3', label: 'F · 分级调节', text: '基于历史数据与当前数据的偏差分级调节除湿单元', parentId: null, referenceIds: [], supportIds: ['para-0024'], ownerRole: 'author' }
-]
-const initialAnnotations: Annotation[] = [
-  { id: 'annotation-1', featureId: 'feature-b', authorRole: 'examiner', authorName: '审查员 · 李岚', text: '“温湿度数据”是否包括露点等派生数据？建议在从属权利要求中限定。', updatedAt: '2026-09-24T03:10:00.000Z' },
-  { id: 'annotation-2', featureId: 'feature-d', authorRole: 'author', authorName: '代理人 · 陈昊', text: '[0024] 已支持分级调节，发布前补充除湿单元与通信模块的连接关系。', updatedAt: '2026-09-24T04:05:00.000Z' }
-]
-function demoState(): WorkbenchState {
-  return {
-    claims: initialClaims, paragraphs: initialParagraphs, features: initialFeatures,
-    annotations: initialAnnotations, orphanMappings: [], versions: [],
-    role: 'author', currentUserRole: 'author', selectedClaimId: 'claim-1', selectedFeatureId: 'feature-b', activeTab: 'mapping'
-  }
-}
 function clone<T>(value: T): T { return structuredClone(value) }
+function uid(prefix: string): string { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`}
+
+export interface SyncRunReport {
+  processed: Array<{ caseId: string; ok: boolean; auto: number; pending: number; error: string | null }>
+}
 
 @Injectable({ providedIn: 'root' })
-export class WorkbenchService implements OnDestroy {
+export class WorkbenchService {
   private readonly initialState = this.loadState()
   private readonly stateSubject = new BehaviorSubject<WorkbenchState>(this.initialState)
   private readonly historySubject = new BehaviorSubject<{ past: number; future: number }>({ past: 0, future: 0 })
@@ -48,39 +28,46 @@ export class WorkbenchService implements OnDestroy {
 
   readonly state$ = this.stateSubject.asObservable()
   readonly history$ = this.historySubject.asObservable()
-  readonly claims$ = this.state$.pipe(map(state => state.claims))
-  readonly paragraphs$ = this.state$.pipe(map(state => state.paragraphs))
-  readonly features$ = this.state$.pipe(map(state => state.features))
-  readonly annotations$ = this.state$.pipe(map(state => state.annotations))
+  readonly table$ = this.state$.pipe(map(state => state.table))
+  readonly cases$ = this.state$.pipe(map(state => state.cases))
+  readonly activeCase$ = this.state$.pipe(map(state => state.cases.find(item => item.id === state.activeCaseId) || state.cases[0]))
+  readonly claims$ = this.activeCase$.pipe(map(caseFile => caseFile.claims))
+  readonly paragraphs$ = this.activeCase$.pipe(map(caseFile => caseFile.paragraphs))
+  readonly features$ = this.activeCase$.pipe(map(caseFile => caseFile.features))
+  readonly annotations$ = this.activeCase$.pipe(map(caseFile => caseFile.annotations))
   readonly role$ = this.state$.pipe(map(state => state.role))
-  readonly selectedClaim$ = this.state$.pipe(map(state => state.claims.find(claim => claim.id === state.selectedClaimId) || state.claims[0]))
-  readonly selectedFeature$ = this.state$.pipe(map(state => state.features.find(feature => feature.id === state.selectedFeatureId) || null))
-  readonly issues$ = this.state$.pipe(map(state => this.validate(state)))
+  readonly selectedClaim$ = this.activeCase$.pipe(map(caseFile => caseFile.claims.find(claim => claim.id === caseFile.selectedClaimId) || caseFile.claims[0]))
+  readonly selectedFeature$ = this.activeCase$.pipe(map(caseFile => caseFile.features.find(feature => feature.id === caseFile.selectedFeatureId) || null))
+  readonly issues$ = this.state$.pipe(map(state => this.validateActive(state)))
 
   constructor() {
-    if (typeof window !== 'undefined') window.addEventListener('beforeunload', () => this.savePosition())
-  }
-
-  ngOnDestroy(): void {
-    if (typeof window !== 'undefined') window.removeEventListener('beforeunload', () => this.savePosition())
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', () => this.savePosition())
+    }
   }
 
   get snapshot(): WorkbenchState { return clone(this.stateSubject.value) }
   get canUndo(): boolean { return this.past.length > 0 }
   get canRedo(): boolean { return this.future.length > 0 }
 
-  selectClaim(id: string): void {
-    this.patchState(state => { state.selectedClaimId = id; state.selectedFeatureId = state.features.find(feature => feature.claimId === id)?.id || null })
+  private activeIndex(state: WorkbenchState): number {
+    const index = state.cases.findIndex(item => item.id === state.activeCaseId)
+    return index >= 0 ? index : 0
+  }
+
+  // ---------- 案件 / 视图导航 ----------
+
+  selectCase(id: string): void {
+    this.patchState(state => {
+      if (!state.cases.some(item => item.id === id)) return
+      state.activeCaseId = id
+    })
     this.savePosition()
   }
 
-  selectFeature(id: string | null): void {
-    this.patchState(state => { state.selectedFeatureId = id })
+  setView(view: 'case' | 'table'): void {
+    this.patchState(state => { state.view = view })
     this.savePosition()
-  }
-
-  setRole(role: Role): void {
-    this.patchState(state => { state.role = role; state.currentUserRole = role })
   }
 
   setTab(tab: string): void {
@@ -88,102 +75,139 @@ export class WorkbenchService implements OnDestroy {
     this.savePosition()
   }
 
-  updateClaim(patch: Partial<Claim>): void {
+  setRole(role: Role): void {
+    this.patchState(state => { state.role = role; state.currentUserRole = role })
+  }
+
+  addCase(): void {
+    const caseFile: CaseFile = {
+      id: uid('case'), name: `新案件 ${new Date().toLocaleDateString('zh-CN')}`, agent: '本机代理人',
+      claims: [], paragraphs: [], features: [], annotations: [], orphanMappings: [], versions: [], pendingLinks: [],
+      sync: { status: 'synced', alignedRevision: this.stateSubject.value.table.revision, lastRunAt: null, lastError: null, attemptedRevision: null, autoSwitchLog: [] },
+      selectedClaimId: '', selectedFeatureId: null
+    }
     this.commit(state => {
-      const claim = state.claims.find(item => item.id === state.selectedClaimId)
+      state.cases.push(caseFile)
+      state.activeCaseId = caseFile.id
+      state.view = 'case'
+    })
+  }
+
+  selectClaim(id: string): void {
+    this.patchState(state => {
+      const caseFile = state.cases[this.activeIndex(state)]
+      caseFile.selectedClaimId = id
+      caseFile.selectedFeatureId = caseFile.features.find(feature => feature.claimId === id)?.id || null
+    })
+    this.savePosition()
+  }
+
+  selectFeature(id: string | null): void {
+    this.patchState(state => { state.cases[this.activeIndex(state)].selectedFeatureId = id })
+    this.savePosition()
+  }
+
+  // ---------- 案件内：权利要求 / 段落 / 特征 / 批注 ----------
+
+  updateClaim(patch: Partial<Claim>): void {
+    this.commitActive(caseFile => {
+      const claim = caseFile.claims.find(item => item.id === caseFile.selectedClaimId)
       if (claim) Object.assign(claim, patch)
     })
   }
 
   addClaim(): void {
-    this.commit(state => {
-      const number = Math.max(0, ...state.claims.map(claim => claim.number)) + 1
-      const claim: Claim = { id: `claim-${Date.now()}`, number, title: `权利要求 ${number}`, independent: false, text: '请录入权利要求正文。' }
-      state.claims.push(claim)
-      state.selectedClaimId = claim.id
-      state.selectedFeatureId = null
+    this.commitActive(caseFile => {
+      const number = Math.max(0, ...caseFile.claims.map(claim => claim.number)) + 1
+      const claim: Claim = { id: uid('claim'), number, title: `权利要求 ${number}`, independent: false, text: '请录入权利要求正文。' }
+      caseFile.claims.push(claim)
+      caseFile.selectedClaimId = claim.id
+      caseFile.selectedFeatureId = null
     })
   }
 
   addParagraph(): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      const next = state.paragraphs.length + 1
-      state.paragraphs.push({ id: `para-${Date.now()}`, section: `说明书 [${String(next * 5).padStart(4, '0')}]`, text: '' })
+    this.commitActive(caseFile => {
+      const next = caseFile.paragraphs.length + 1
+      caseFile.paragraphs.push({ id: uid('para'), section: `说明书 [${String(next * 5).padStart(4, '0')}]`, text: '' })
     })
   }
 
   updateParagraph(id: string, patch: Partial<Paragraph>): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      const paragraph = state.paragraphs.find(item => item.id === id)
+    this.commitActive(caseFile => {
+      const paragraph = caseFile.paragraphs.find(item => item.id === id)
       if (paragraph) Object.assign(paragraph, patch)
     })
   }
 
   deleteParagraph(id: string): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      state.paragraphs = state.paragraphs.filter(item => item.id !== id)
-      state.features.forEach(feature => { feature.supportIds = feature.supportIds.filter(paragraphId => paragraphId !== id) })
-      state.orphanMappings = state.orphanMappings.filter(item => item.paragraphId !== id)
+    this.commitActive(caseFile => {
+      caseFile.paragraphs = caseFile.paragraphs.filter(item => item.id !== id)
+      caseFile.features.forEach(feature => { feature.supportIds = feature.supportIds.filter(paragraphId => paragraphId !== id) })
+      caseFile.orphanMappings = caseFile.orphanMappings.filter(item => item.paragraphId !== id)
     })
   }
 
   addFeature(): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
+    this.commitActive(caseFile => {
       const feature: Feature = {
-        id: `feature-${Date.now()}`, claimId: state.selectedClaimId,
-        label: `新特征 ${state.features.filter(item => item.claimId === state.selectedClaimId).length + 1}`,
-        text: '', parentId: null, referenceIds: [], supportIds: [], ownerRole: state.role
+        id: uid('feature'), claimId: caseFile.selectedClaimId,
+        label: `新特征 ${caseFile.features.filter(item => item.claimId === caseFile.selectedClaimId).length + 1}`,
+        text: '', parentId: null, referenceIds: [], supportIds: [], ownerRole: this.stateSubject.value.role,
+        tableFeatureId: null, alignedRevision: null
       }
-      state.features.push(feature)
-      state.selectedFeatureId = feature.id
+      caseFile.features.push(feature)
+      caseFile.selectedFeatureId = feature.id
     })
   }
 
   updateFeature(id: string, patch: Partial<Feature>): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      const feature = state.features.find(item => item.id === id)
+    this.commitActive(caseFile => {
+      const feature = caseFile.features.find(item => item.id === id)
       if (feature) Object.assign(feature, patch)
     })
   }
 
   deleteFeature(id: string): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      const feature = state.features.find(item => item.id === id)
+    this.commitActive(caseFile => {
+      const feature = caseFile.features.find(item => item.id === id)
       if (!feature) return
-      feature.supportIds.forEach(paragraphId => state.orphanMappings.push({
-        id: `orphan-${Date.now()}-${paragraphId}`, featureLabel: feature.label, paragraphId,
+      feature.supportIds.forEach(paragraphId => caseFile.orphanMappings.push({
+        id: uid('orphan'), featureLabel: feature.label, paragraphId,
         reason: `技术特征“${feature.label}”已删除，但支持段落映射仍被保留。`
       }))
-      state.features = state.features.filter(item => item.id !== id)
-      state.features.forEach(item => {
+      caseFile.features = caseFile.features.filter(item => item.id !== id)
+      caseFile.features.forEach(item => {
         item.referenceIds = item.referenceIds.filter(refId => refId !== id)
         if (item.parentId === id) item.parentId = null
       })
-      state.annotations = state.annotations.filter(item => item.featureId !== id)
-      state.selectedFeatureId = state.features.find(item => item.claimId === state.selectedClaimId)?.id || null
+      caseFile.annotations = caseFile.annotations.filter(item => item.featureId !== id)
+      // 挂起记录不允许落到已不存在的特征上
+      caseFile.pendingLinks = caseFile.pendingLinks.filter(link => link.featureId !== id)
+      caseFile.selectedFeatureId = caseFile.features.find(item => item.claimId === caseFile.selectedClaimId)?.id || null
     })
   }
 
   toggleParagraphMapping(featureId: string, paragraphId: string): void {
     if (this.stateSubject.value.role === 'viewer') return
-    this.commit(state => {
-      const feature = state.features.find(item => item.id === featureId)
+    this.commitActive(caseFile => {
+      const feature = caseFile.features.find(item => item.id === featureId)
       if (!feature) return
       const index = feature.supportIds.indexOf(paragraphId)
       if (index >= 0) feature.supportIds.splice(index, 1)
       else feature.supportIds.push(paragraphId)
-      state.orphanMappings = state.orphanMappings.filter(item => item.paragraphId !== paragraphId)
+      caseFile.orphanMappings = caseFile.orphanMappings.filter(item => item.paragraphId !== paragraphId)
     })
   }
 
   clearOrphan(id: string): void {
-    this.commit(state => { state.orphanMappings = state.orphanMappings.filter(item => item.id !== id) })
+    this.commitActive(caseFile => { caseFile.orphanMappings = caseFile.orphanMappings.filter(item => item.id !== id) })
   }
 
   addAnnotation(featureId: string, text: string): void {
@@ -191,44 +215,204 @@ export class WorkbenchService implements OnDestroy {
     if (!trimmed) return
     const role = this.stateSubject.value.role
     const names: Record<Role, string> = { author: '代理人 · 陈昊', examiner: '审查员 · 李岚', viewer: '观察者' }
-    this.commit(state => state.annotations.push({
-      id: `annotation-${Date.now()}`, featureId, authorRole: role, authorName: names[role], text: trimmed, updatedAt: new Date().toISOString()
+    this.commitActive(caseFile => caseFile.annotations.push({
+      id: uid('annotation'), featureId, authorRole: role, authorName: names[role], text: trimmed, updatedAt: new Date().toISOString()
     }))
   }
 
   updateAnnotation(id: string, text: string): void {
-    this.commit(state => {
-      const annotation = state.annotations.find(item => item.id === id)
-      if (annotation && annotation.authorRole === state.role) annotation.text = text
+    this.commitActive(caseFile => {
+      const annotation = caseFile.annotations.find(item => item.id === id)
+      if (annotation && annotation.authorRole === this.stateSubject.value.role) annotation.text = text
     })
   }
 
   deleteAnnotation(id: string): void {
-    this.commit(state => {
-      const annotation = state.annotations.find(item => item.id === id)
-      if (annotation && annotation.authorRole === state.role) state.annotations = state.annotations.filter(item => item.id !== id)
+    this.commitActive(caseFile => {
+      const annotation = caseFile.annotations.find(item => item.id === id)
+      if (annotation && annotation.authorRole === this.stateSubject.value.role) {
+        caseFile.annotations = caseFile.annotations.filter(item => item.id !== id)
+      }
     })
   }
 
   createVersion(name?: string): void {
-    this.commit(state => {
-      state.versions.unshift({
-        id: `version-${Date.now()}`, name: name?.trim() || `快照 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
-        createdAt: new Date().toISOString(), claims: clone(state.claims), features: clone(state.features)
+    this.commitActive(caseFile => {
+      caseFile.versions.unshift({
+        id: uid('version'), name: name?.trim() || `快照 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        createdAt: new Date().toISOString(), claims: clone(caseFile.claims), features: clone(caseFile.features)
       })
     })
   }
 
   restoreVersion(id: string): void {
-    this.commit(state => {
-      const version = state.versions.find(item => item.id === id)
+    this.commitActive((caseFile, state) => {
+      const version = caseFile.versions.find(item => item.id === id)
       if (!version) return
-      state.claims = clone(version.claims)
-      state.features = clone(version.features)
-      if (!state.claims.some(claim => claim.id === state.selectedClaimId)) state.selectedClaimId = state.claims[0]?.id || ''
-      state.selectedFeatureId = state.features.find(feature => feature.claimId === state.selectedClaimId)?.id || null
+      const restoredIds = new Set(version.features.map(feature => feature.id))
+      caseFile.claims = clone(version.claims)
+      caseFile.features = clone(version.features)
+      // 版本恢复后清理指向已消失特征的批注与挂起，防止依据/挂起落空
+      caseFile.annotations = caseFile.annotations.filter(item => restoredIds.has(item.featureId))
+      caseFile.pendingLinks = caseFile.pendingLinks.filter(link => restoredIds.has(link.featureId))
+      if (!caseFile.claims.some(claim => claim.id === caseFile.selectedClaimId)) {
+        caseFile.selectedClaimId = caseFile.claims[0]?.id || ''
+      }
+      caseFile.selectedFeatureId = caseFile.features.find(feature => feature.claimId === caseFile.selectedClaimId)?.id || null
+      caseFile.sync.status = caseNeedsSync(caseFile, state.table) ? 'out-of-sync' : 'synced'
     })
   }
+
+  // ---------- 特征表（所级统一维护） ----------
+
+  updateMasterMeta(id: string, patch: Partial<Pick<MasterFeature, 'code' | 'label'>>): void {
+    this.commit(state => {
+      const master = state.table.features.find(item => item.id === id)
+      if (master && master.status === 'active') Object.assign(master, patch)
+    })
+  }
+
+  addMasterFeature(code: string, label: string, definition: string): void {
+    const trimmed = definition.trim()
+    if (!trimmed) return
+    this.commit(state => {
+      state.table.features.push(this.makeMaster(state.table.revision, code.trim() || `T${state.table.features.length + 1}`, label.trim() || '未命名特征', trimmed, {}))
+    })
+  }
+
+  /** 改掉定义：旧条目退役，新定义唯一生效，引用旧条目的案件按新定义重新对上 */
+  redefineMaster(id: string, code: string, label: string, definition: string): void {
+    const trimmed = definition.trim()
+    if (!trimmed) return
+    this.commit(state => {
+      const old = state.table.features.find(item => item.id === id)
+      if (!old || old.status !== 'active') return
+      state.table.revision += 1
+      old.status = 'retired'
+      old.replacedByIds = []
+      const replacement = this.makeMaster(state.table.revision, code.trim() || `${old.code}1`, label.trim() || old.label, trimmed, { supersedesId: old.id })
+      old.replacedByIds = [replacement.id]
+      state.table.features.push(replacement)
+      this.markCasesOutOfSync(state)
+    })
+  }
+
+  /** 拆成两条或更多：旧条目退役，多个新生效条目并列 */
+  splitMaster(id: string, parts: Array<{ code: string; label: string; definition: string }>): void {
+    const valid = parts.map(part => ({ code: part.code.trim(), label: part.label.trim(), definition: part.definition.trim() })).filter(part => part.definition)
+    if (!valid.length) return
+    this.commit(state => {
+      const old = state.table.features.find(item => item.id === id)
+      if (!old || old.status !== 'active') return
+      state.table.revision += 1
+      old.status = 'retired'
+      old.replacedByIds = []
+      for (const part of valid) {
+        const created = this.makeMaster(state.table.revision, part.code, part.label || '未命名特征', part.definition, { splitFromId: old.id })
+        old.replacedByIds.push(created.id)
+        state.table.features.push(created)
+      }
+      this.markCasesOutOfSync(state)
+    })
+  }
+
+  /** 退役且无替代：引用它的案件必然无法自动对上，全部挂起 */
+  retireMaster(id: string): void {
+    this.commit(state => {
+      const old = state.table.features.find(item => item.id === id)
+      if (!old || old.status !== 'active') return
+      state.table.revision += 1
+      old.status = 'retired'
+      old.replacedByIds = []
+      this.markCasesOutOfSync(state)
+    })
+  }
+
+  private makeMaster(revision: number, code: string, label: string, definition: string,
+    links: { splitFromId?: string | null; supersedesId?: string | null }): MasterFeature {
+    return {
+      id: uid('mf'), code, label, definition, status: 'active', revision,
+      splitFromId: links.splitFromId ?? null, supersedesId: links.supersedesId ?? null,
+      replacedByIds: [], updatedAt: new Date().toISOString()
+    }
+  }
+
+  private markCasesOutOfSync(state: WorkbenchState): void {
+    for (const caseFile of state.cases) {
+      if (caseFile.sync.status === 'synced' && caseStaleFeatures(caseFile, state.table).length > 0) {
+        caseFile.sync.status = 'out-of-sync'
+      }
+    }
+  }
+
+  // ---------- 同步：唯一自动换 / 挂起 / 失败回退 / 按案件重试 ----------
+
+  /** 演练开关：让指定案件下一次同步失败，验证按案件回退与重试 */
+  toggleFailNext(caseId: string): void {
+    this.patchState(state => {
+      const set = new Set(state.failNextSyncCaseIds)
+      set.has(caseId) ? set.delete(caseId) : set.add(caseId)
+      state.failNextSyncCaseIds = [...set]
+    })
+  }
+
+  /** 全部案件一起对齐；单个案件失败只回退该案件，其他案件与特征表照常生效 */
+  syncAll(): SyncRunReport {
+    return this.runSync(this.stateSubject.value.cases.map(item => item.id))
+  }
+
+  /** 按案件重试：该案件退回上次成功后的样子再评估；只补尚未对上的部分 */
+  syncCase(caseId: string): SyncRunReport {
+    return this.runSync([caseId])
+  }
+
+  private runSync(caseIds: string[]): SyncRunReport {
+    const report: SyncRunReport = { processed: [] }
+    this.commit(state => {
+      const at = new Date().toISOString()
+      for (const caseId of caseIds) {
+        const index = state.cases.findIndex(item => item.id === caseId)
+        if (index < 0) continue
+        // 处理前快照：失败时整体退回，特征表与其他案件不动
+        const before = clone(state.cases[index])
+        try {
+          const shouldFail = state.failNextSyncCaseIds.includes(caseId)
+          const plan = buildPlan(state.cases[index], state.table, at)
+          if (shouldFail) {
+            state.failNextSyncCaseIds = state.failNextSyncCaseIds.filter(id => id !== caseId)
+            throw new Error('处理中断：特征引用更新未完成（演练注入的失败）')
+          }
+          applyPlan(state.cases[index], plan, state.table.revision, at)
+          report.processed.push({ caseId, ok: true, auto: plan.auto.length, pending: plan.pending.length, error: null })
+        } catch (error) {
+          // 回退本案件到处理前；重试时只评估仍引用退役条目的特征（即没对上的部分）
+          state.cases[index] = before
+          state.cases[index].sync.status = 'failed'
+          state.cases[index].sync.lastError = error instanceof Error ? error.message : String(error)
+          state.cases[index].sync.attemptedRevision = state.table.revision
+          report.processed.push({ caseId, ok: false, auto: 0, pending: before.pendingLinks.length, error: state.cases[index].sync.lastError })
+        }
+      }
+    })
+    return report
+  }
+
+  /** 代理人确认挂起：改挂候选条目，或脱离特征表保留为案件本地特征 */
+  resolvePending(linkId: string, choice: { type: 'pick'; tableFeatureId: string } | { type: 'detach' }): void {
+    this.commitActive((caseFile, state) => {
+      resolvePendingLink(caseFile, linkId, choice, state.table, new Date().toISOString())
+    })
+  }
+
+  masterCandidatesForLink(link: PendingLink): ReturnType<typeof scoreCandidates> {
+    const table = this.stateSubject.value.table
+    const caseFile = this.stateSubject.value.cases.find(item => item.pendingLinks.some(linkItem => linkItem.id === link.id))
+    const feature = caseFile?.features.find(item => item.id === link.featureId)
+    const scoped = table.features.filter(master => master.status === 'active')
+    return feature ? scoreCandidates(feature.text, scoped) : []
+  }
+
+  // ---------- 撤销重做 / 持久化 ----------
 
   undo(): void {
     const previous = this.past.pop()
@@ -251,39 +435,67 @@ export class WorkbenchService implements OnDestroy {
   savePosition(): void {
     if (typeof localStorage === 'undefined') return
     const state = this.stateSubject.value
-    const position: Position = { tab: state.activeTab, claimId: state.selectedClaimId, featureId: state.selectedFeatureId, scrollY: window.scrollY }
+    const position: Position = { activeCaseId: state.activeCaseId, view: state.view, tab: state.activeTab, scrollY: window.scrollY }
     localStorage.setItem(POSITION_KEY, JSON.stringify(position))
     this.saveState()
   }
 
-  readPosition(): Position {
-    if (typeof localStorage === 'undefined') return { tab: this.initialState.activeTab, claimId: this.initialState.selectedClaimId, featureId: this.initialState.selectedFeatureId, scrollY: 0 }
-    try { return { ...JSON.parse(localStorage.getItem(POSITION_KEY) || '{}'), ...this.stateSubject.value } } catch { return { tab: 'mapping', claimId: this.initialState.selectedClaimId, featureId: this.initialState.selectedFeatureId, scrollY: 0 } }
+  restorePosition(): void {
+    if (typeof localStorage === 'undefined') return
+    try {
+      const raw = localStorage.getItem(POSITION_KEY)
+      if (!raw) return
+      const position = JSON.parse(raw) as Partial<Position>
+      this.patchState(state => {
+        if (position.activeCaseId && state.cases.some(item => item.id === position.activeCaseId)) state.activeCaseId = position.activeCaseId
+        if (position.view) state.view = position.view
+        if (position.tab) state.activeTab = position.tab
+      })
+      setTimeout(() => window.scrollTo({ top: position.scrollY || 0, behavior: 'instant' as ScrollBehavior }), 0)
+    } catch { /* 忽略损坏的位置信息 */ }
   }
 
-  exportJson(): string { return JSON.stringify({ ...this.snapshot, validationIssues: this.validate(this.stateSubject.value) }, null, 2) }
+  exportJson(): string {
+    const state = this.stateSubject.value
+    const caseFile = state.cases[this.activeIndex(state)]
+    return JSON.stringify({ caseId: caseFile.id, caseName: caseFile.name, ...caseFile, tableRevision: state.table.revision, validationIssues: this.validateActive(state) }, null, 2)
+  }
 
   exportCsv(): string {
     const state = this.stateSubject.value
-    const rows = state.features.map(feature => [
-      state.claims.find(claim => claim.id === feature.claimId)?.number || '', feature.label, feature.text,
-      state.features.find(item => item.id === feature.parentId)?.label || '',
-      feature.referenceIds.map(id => state.features.find(item => item.id === id)?.label || id).join('；'),
-      feature.supportIds.map(id => state.paragraphs.find(item => item.id === id)?.section || id).join('；')
+    const caseFile = state.cases[this.activeIndex(state)]
+    const rows = caseFile.features.map(feature => [
+      caseFile.claims.find(claim => claim.id === feature.claimId)?.number || '', feature.label, feature.text,
+      caseFile.features.find(item => item.id === feature.parentId)?.label || '',
+      feature.referenceIds.map(id => caseFile.features.find(item => item.id === id)?.label || id).join('；'),
+      feature.supportIds.map(id => caseFile.paragraphs.find(item => item.id === id)?.section || id).join('；'),
+      state.table.features.find(item => item.id === feature.tableFeatureId)?.code || '本地特征',
+      feature.alignedRevision ?? ''
     ])
-    const csv = [['权利要求', '技术特征', '特征内容', '父级特征', '引用特征', '支持段落'], ...rows]
+    const csv = [['权利要求', '技术特征', '特征内容', '父级特征', '引用特征', '支持段落', '特征表条目', '对齐版本'], ...rows]
       .map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\n')
-    return `\uFEFF${csv}`
+    return `﻿${csv}`
   }
 
-  validate(state = this.stateSubject.value): ValidationIssue[] {
+  // ---------- 校验 ----------
+
+  validateActive(state = this.stateSubject.value): ValidationIssue[] {
+    const caseFile = state.cases[this.activeIndex(state)]
+    if (!caseFile) return []
     const issues: ValidationIssue[] = []
-    for (const feature of state.features) {
+    for (const feature of caseFile.features) {
       if (!feature.text.trim()) issues.push({ id: `empty-${feature.id}`, severity: 'warning', type: 'empty-feature', featureId: feature.id, title: `${feature.label} 内容为空`, detail: '请补全技术特征文字，避免映射对象不明确。' })
       if (!feature.supportIds.length) issues.push({ id: `support-${feature.id}`, severity: 'error', type: 'missing-support', featureId: feature.id, title: `${feature.label} 缺少说明书依据`, detail: '至少为一个说明书段落建立支持映射。' })
-      if (this.hasReferenceCycle(feature, state.features)) issues.push({ id: `cycle-${feature.id}`, severity: 'error', type: 'cycle', featureId: feature.id, title: `${feature.label} 存在循环引用`, detail: '特征层级或引用关系形成闭环，请移除其中一条关系。' })
+      if (this.hasReferenceCycle(feature, caseFile.features)) issues.push({ id: `cycle-${feature.id}`, severity: 'error', type: 'cycle', featureId: feature.id, title: `${feature.label} 存在循环引用`, detail: '特征层级或引用关系形成闭环，请移除其中一条关系。' })
     }
-    state.orphanMappings.forEach(item => issues.push({ id: item.id, severity: 'warning', type: 'orphan-mapping', title: '存在待清理映射', detail: item.reason }))
+    for (const link of caseFile.pendingLinks) {
+      issues.push({
+        id: link.id, severity: 'warning', type: 'pending-link', featureId: caseFile.features.some(item => item.id === link.featureId) ? link.featureId : undefined,
+        title: `${link.featureLabel} 等待按新特征表确认`,
+        detail: link.reason
+      })
+    }
+    caseFile.orphanMappings.forEach(item => issues.push({ id: item.id, severity: 'warning', type: 'orphan-mapping', title: '存在待清理映射', detail: item.reason }))
     return issues
   }
 
@@ -299,6 +511,35 @@ export class WorkbenchService implements OnDestroy {
       return feature.referenceIds.some(visit)
     }
     return visit(start.id)
+  }
+
+  // ---------- 演示：载入旧版（v1）数据并走升级 ----------
+
+  demoLoadLegacy(): void {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(legacyV1State()))
+    const migrated = migrateLegacyState(legacyV1State(), this.stateSubject.value.table, tableRevision1(), new Date().toISOString())
+    this.commit(state => {
+      state.cases = state.cases.filter(item => item.id !== 'case-migrated')
+      state.cases.unshift(migrated)
+      state.activeCaseId = migrated.id
+      state.view = 'case'
+      state.activeTab = 'pending'
+    })
+  }
+
+  resetDemo(): void {
+    const fresh = seedState()
+    this.past = []
+    this.future = []
+    this.stateSubject.next(fresh)
+    this.updateHistory()
+    this.saveState()
+  }
+
+  // ---------- 内部 ----------
+
+  private commitActive(recipe: (caseFile: CaseFile, state: WorkbenchState) => void): void {
+    this.commit(state => recipe(state.cases[this.activeIndex(state)], state))
   }
 
   private commit(recipe: (state: WorkbenchState) => void): void {
@@ -322,11 +563,28 @@ export class WorkbenchService implements OnDestroy {
 
   private updateHistory(): void { this.historySubject.next({ past: this.past.length, future: this.future.length }) }
   private saveState(): void { if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, JSON.stringify(this.stateSubject.value)) }
+
   private loadState(): WorkbenchState {
-    if (typeof localStorage === 'undefined') return demoState()
+    if (typeof localStorage === 'undefined') return seedState()
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
-      return stored ? { ...demoState(), ...JSON.parse(stored) } : demoState()
-    } catch { return demoState() }
+      if (stored) {
+        const parsed = JSON.parse(stored) as WorkbenchState
+        return parsed.schemaVersion === 2 ? { ...seedState(), ...parsed } : this.upgrade(parsed as unknown as Record<string, unknown>)
+      }
+      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
+      if (legacy) return this.upgrade(JSON.parse(legacy) as Record<string, unknown>)
+      return seedState()
+    } catch {
+      return seedState()
+    }
+  }
+
+  /** 工作台已有数据先升级成引用特征表的结构，再参与对应 */
+  private upgrade(raw: Record<string, unknown>): WorkbenchState {
+    const seed = seedState()
+    const migrated = migrateLegacyState(raw, seed.table, tableRevision1(), new Date().toISOString())
+    migrated.name = '本机已存案件（旧版数据已升级）'
+    return { ...seed, cases: [migrated, ...seed.cases.filter(item => item.id !== caseAlpha().id)], activeCaseId: migrated.id, activeTab: 'pending' }
   }
 }
